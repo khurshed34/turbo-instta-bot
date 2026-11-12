@@ -6,10 +6,10 @@ import logging
 import asyncio
 import tempfile
 import requests
-import instaloader
-import yt_dlp
 
 from urllib.parse import urlparse
+from instaloader import Instaloader, Post
+
 from telegram import Update, ReplyKeyboardMarkup, KeyboardButton
 from telegram.ext import (
     Application,
@@ -25,353 +25,287 @@ from telegram.ext import (
 
 TOKEN = os.getenv("BOT_TOKEN")
 
-MAX_SIZE = 49 * 1024 * 1024
+MAX_FILE_SIZE = 49 * 1024 * 1024
 MAX_PHOTO_SIZE = 10 * 1024 * 1024
+
+INSTAGRAM_HOSTS = {
+    "instagram.com",
+    "www.instagram.com",
+    "m.instagram.com",
+}
 
 HEADERS = {
     "User-Agent": (
         "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
         "AppleWebKit/537.36 Chrome/120.0 Safari/537.36"
-    )
+    ),
+    "Referer": "https://www.instagram.com/",
 }
 
 logging.basicConfig(
     format="%(asctime)s - %(levelname)s - %(message)s",
-    level=logging.INFO
+    level=logging.INFO,
 )
 
 logger = logging.getLogger(__name__)
 
-# =====================================
-# BUTTONS
-# =====================================
-
 BTN_INSTAGRAM = "📸 Instagram"
-BTN_YOUTUBE = "▶️ YouTube"
-BTN_TIKTOK = "🎵 TikTok"
-
-BTN_VIDEO = "🎬 YouTube Видео"
-BTN_SHORTS = "📱 YouTube Shorts"
-BTN_MP3 = "🎧 YouTube MP3"
-BTN_BACK = "⬅️ Меню"
 
 MAIN_MENU = ReplyKeyboardMarkup(
-    [
-        [KeyboardButton(BTN_INSTAGRAM)],
-        [KeyboardButton(BTN_YOUTUBE), KeyboardButton(BTN_TIKTOK)],
-    ],
-    resize_keyboard=True
-)
-
-YOUTUBE_MENU = ReplyKeyboardMarkup(
-    [
-        [KeyboardButton(BTN_VIDEO)],
-        [KeyboardButton(BTN_SHORTS)],
-        [KeyboardButton(BTN_MP3)],
-        [KeyboardButton(BTN_BACK)],
-    ],
-    resize_keyboard=True
+    [[KeyboardButton(BTN_INSTAGRAM)]],
+    resize_keyboard=True,
 )
 
 # =====================================
 # START
 # =====================================
 
-async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-
-    context.user_data["mode"] = None
+async def start(
+    update: Update,
+    context: ContextTypes.DEFAULT_TYPE
+):
 
     await update.message.reply_text(
-        "👋 Салом! Ман TurboInstta ҳастам.\n\n"
-        "🚀 Як шабакаро интихоб кун:\n\n"
-        "📸 Instagram\n"
-        "▶️ YouTube\n"
-        "🎵 TikTok\n\n"
+        "👋 Салом! Ман Instagram Downloader ҳастам.\n\n"
+        "📸 Ман метавонам зеркашӣ кунам:\n\n"
+        "• Post\n"
+        "• Reels\n"
+        "• Carousel\n\n"
+        "🔗 Пайванди Instagram-ро фирист.\n\n"
         "⚠️ Танҳо маводеро истифода бар, ки "
         "ҳуқуқи зеркашӣ ё истифодаашро дорӣ.",
-        reply_markup=MAIN_MENU
+        reply_markup=MAIN_MENU,
     )
 
 
 # =====================================
-# DIRECT DOWNLOAD
+# CHECK INSTAGRAM URL
 # =====================================
 
-def download_file(url, path):
+def extract_instagram_url(text):
 
-    response = requests.get(
-        url,
-        headers=HEADERS,
-        stream=True,
-        timeout=40
+    match = re.search(
+        r"https?://[^\s]+",
+        text,
+        re.IGNORECASE,
     )
 
-    response.raise_for_status()
+    if not match:
+        raise ValueError("Пайванди Instagram ёфт нашуд.")
 
-    total = 0
-
-    with open(path, "wb") as f:
-
-        for chunk in response.iter_content(1024 * 256):
-
-            if not chunk:
-                continue
-
-            total += len(chunk)
-
-            if total > MAX_SIZE:
-                raise ValueError("Файл аз 49 MB зиёд аст.")
-
-            f.write(chunk)
-
-    return path
-
-
-# =====================================
-# INSTAGRAM
-# =====================================
-
-def download_instagram(url, folder):
+    url = match.group(0).rstrip(".,!?)]}")
 
     parsed = urlparse(url)
 
+    host = (parsed.hostname or "").lower()
+
+    if parsed.scheme not in ("http", "https"):
+        raise ValueError("Пайванд нодуруст аст.")
+
+    if host not in INSTAGRAM_HOSTS:
+        raise ValueError("Ин пайванди Instagram нест.")
+
     parts = [
-        p for p in parsed.path.strip("/").split("/")
-        if p
+        item for item in parsed.path.strip("/").split("/")
+        if item
     ]
 
     if not parts:
         raise ValueError("Пайванди Instagram нодуруст аст.")
 
-    # STORIES
     if parts[0].lower() == "stories":
-
         raise ValueError(
-            "📖 Instagram Story муайян шуд.\n\n"
-            "Ин версия ҳоло зеркашии Stories-ро дастгирӣ "
-            "намекунад. Барои Story дастрасии расмӣ ва "
-            "иҷозатдодашуда лозим аст.\n\n"
-            "Аккаунтҳои Private дастгирӣ намешаванд."
+            "📖 Ин пайванди Instagram Story аст.\n\n"
+            "Ин версия танҳо Post, Reels ва Carousel-ро "
+            "дастгирӣ мекунад."
         )
 
-    # POST / REEL / CAROUSEL
-    match = re.search(
-        r"instagram\.com/(?:p|reel|reels|tv)/([A-Za-z0-9_-]+)",
+    if parts[0].lower() not in ("p", "reel", "reels", "tv"):
+        raise ValueError(
+            "❌ Навъи пайванд дастгирӣ намешавад.\n\n"
+            "Post, Reels ё Carousel фирист."
+        )
+
+    if len(parts) < 2:
+        raise ValueError("Коди Post ё Reels ёфт нашуд.")
+
+    shortcode = parts[1]
+
+    if not re.fullmatch(r"[A-Za-z0-9_-]+", shortcode):
+        raise ValueError("Коди Instagram нодуруст аст.")
+
+    return url, shortcode
+
+
+# =====================================
+# DOWNLOAD FILE
+# =====================================
+
+def download_file(url, path):
+
+    total = 0
+
+    with requests.get(
         url,
-        re.IGNORECASE
-    )
+        headers=HEADERS,
+        stream=True,
+        timeout=(20, 60),
+    ) as response:
 
-    if not match:
+        response.raise_for_status()
 
-        raise ValueError(
-            "Пайванди Instagram нодуруст аст.\n"
-            "Post, Reel ё Carousel фирист."
+        content_length = response.headers.get(
+            "Content-Length"
         )
 
-    shortcode = match.group(1)
+        if content_length:
+            if int(content_length) > MAX_FILE_SIZE:
+                raise ValueError(
+                    "Файл аз 49 MB зиёд аст."
+                )
 
-    loader = instaloader.Instaloader(
+        with open(path, "wb") as file:
+
+            for chunk in response.iter_content(
+                chunk_size=256 * 1024
+            ):
+
+                if not chunk:
+                    continue
+
+                total += len(chunk)
+
+                if total > MAX_FILE_SIZE:
+                    raise ValueError(
+                        "Файл аз 49 MB зиёд аст."
+                    )
+
+                file.write(chunk)
+
+    if total == 0:
+        raise ValueError("Файли зеркашидашуда холӣ аст.")
+
+    return path
+
+
+# =====================================
+# INSTAGRAM DOWNLOADER
+# =====================================
+
+def download_instagram(url, folder):
+
+    _, shortcode = extract_instagram_url(url)
+
+    loader = Instaloader(
         download_pictures=False,
         download_videos=False,
         download_video_thumbnails=False,
         save_metadata=False,
         compress_json=False,
-        quiet=True
+        quiet=True,
     )
 
-    post = instaloader.Post.from_shortcode(
-        loader.context,
-        shortcode
-    )
+    try:
+
+        post = Post.from_shortcode(
+            loader.context,
+            shortcode,
+        )
+
+    except Exception as error:
+
+        raise RuntimeError(
+            "Instagram маълумоти ин Post-ро дастрас накард. "
+            "Шояд Post хусусӣ, нестшуда ё маҳдуд бошад."
+        ) from error
 
     results = []
 
+    # =================================
     # CAROUSEL
+    # =================================
 
     if post.typename == "GraphSidecar":
 
         for index, node in enumerate(
             post.get_sidecar_nodes(),
-            start=1
+            start=1,
         ):
 
             if node.is_video:
 
                 media_url = node.video_url
-                ext = ".mp4"
+                extension = ".mp4"
                 media_type = "video"
 
             else:
 
                 media_url = node.display_url
-                ext = ".jpg"
+                extension = ".jpg"
                 media_type = "photo"
 
             filename = os.path.join(
                 folder,
-                f"instagram_{index}{ext}"
+                f"instagram_{index}{extension}",
             )
 
-            download_file(media_url, filename)
+            download_file(
+                media_url,
+                filename,
+            )
 
-            results.append((filename, media_type))
+            results.append(
+                (filename, media_type)
+            )
 
-        return results
+    # =================================
+    # SINGLE PHOTO
+    # =================================
 
-    # PHOTO
-
-    if not post.is_video:
+    elif not post.is_video:
 
         filename = os.path.join(
             folder,
-            "instagram_photo.jpg"
+            "instagram_photo.jpg",
         )
 
-        download_file(post.url, filename)
+        download_file(
+            post.url,
+            filename,
+        )
 
-        return [(filename, "photo")]
+        results.append(
+            (filename, "photo")
+        )
 
-    # VIDEO / REELS
-
-    filename = os.path.join(
-        folder,
-        "instagram_video.mp4"
-    )
-
-    download_file(post.video_url, filename)
-
-    return [(filename, "video")]
-
-
-# =====================================
-# URL CHECK
-# =====================================
-
-YOUTUBE_HOSTS = {
-    "youtube.com",
-    "www.youtube.com",
-    "m.youtube.com",
-    "music.youtube.com",
-    "youtu.be",
-}
-
-TIKTOK_HOSTS = {
-    "tiktok.com",
-    "www.tiktok.com",
-    "m.tiktok.com",
-    "vm.tiktok.com",
-    "vt.tiktok.com",
-}
-
-
-def check_url(url):
-
-    parsed = urlparse(url)
-
-    if parsed.scheme not in ("http", "https"):
-        return None
-
-    host = (parsed.hostname or "").lower()
-
-    if host in ("instagram.com", "www.instagram.com"):
-        return "instagram"
-
-    if host in YOUTUBE_HOSTS:
-        return "youtube"
-
-    if host in TIKTOK_HOSTS:
-        return "tiktok"
-
-    return None
-
-
-# =====================================
-# YOUTUBE + TIKTOK
-# =====================================
-
-def download_ytdlp(url, folder, mode):
-
-    output = os.path.join(
-        folder,
-        "%(id)s.%(ext)s"
-    )
-
-    options = {
-        "outtmpl": output,
-        "noplaylist": True,
-        "quiet": True,
-        "no_warnings": True,
-        "max_filesize": MAX_SIZE,
-        "restrictfilenames": True,
-        "overwrites": True,
-        "retries": 2,
-        "fragment_retries": 2,
-    }
-
-    # VIDEO
-
-    if mode in ("youtube_video", "youtube_shorts", "tiktok"):
-
-        options.update({
-            "format": "best[ext=mp4]/best",
-            "merge_output_format": "mp4",
-        })
-
-    # MP3
-
-    elif mode == "youtube_mp3":
-
-        options.update({
-            "format": "bestaudio/best",
-            "postprocessors": [{
-                "key": "FFmpegExtractAudio",
-                "preferredcodec": "mp3",
-                "preferredquality": "192",
-            }],
-        })
+    # =================================
+    # REELS / VIDEO
+    # =================================
 
     else:
 
-        raise ValueError("Навъи зеркашӣ нодуруст аст.")
+        filename = os.path.join(
+            folder,
+            "instagram_video.mp4",
+        )
 
-    with yt_dlp.YoutubeDL(options) as ydl:
+        download_file(
+            post.video_url,
+            filename,
+        )
 
-        ydl.download([url])
+        results.append(
+            (filename, "video")
+        )
 
-    results = []
-
-    for filename in os.listdir(folder):
-
-        path = os.path.join(folder, filename)
-
-        if not os.path.isfile(path):
-            continue
-
-        size = os.path.getsize(path)
-
-        if size > MAX_SIZE:
-            raise ValueError("Файл аз 49 MB зиёд аст.")
-
-        ext = os.path.splitext(filename)[1].lower()
-
-        if mode == "youtube_mp3":
-
-            if ext == ".mp3":
-                results.append((path, "audio"))
-
-        elif ext == ".mp4":
-
-            results.append((path, "video"))
-
-        elif ext in (".mkv", ".webm", ".mov"):
-
-            results.append((path, "document"))
+    if not results:
+        raise ValueError("Ягон файл ёфт нашуд.")
 
     return results
 
 
 # =====================================
-# SEND FILES
+# SEND FILES TO TELEGRAM
 # =====================================
 
 async def send_files(update, msg, files):
@@ -397,304 +331,168 @@ async def send_files(update, msg, files):
 
         size = os.path.getsize(filename)
 
-        if size > MAX_SIZE:
+        if size == 0 or size > MAX_FILE_SIZE:
             continue
 
         with open(filename, "rb") as media:
 
-            if media_type == "photo" and size <= MAX_PHOTO_SIZE:
+            if (
+                media_type == "photo"
+                and size <= MAX_PHOTO_SIZE
+            ):
 
                 await update.message.reply_photo(
-                    photo=media
+                    photo=media,
                 )
 
             elif media_type == "video":
 
                 await update.message.reply_video(
                     video=media,
-                    supports_streaming=True
-                )
-
-            elif media_type == "audio":
-
-                await update.message.reply_audio(
-                    audio=media,
-                    title="TurboInstta MP3"
+                    supports_streaming=True,
                 )
 
             else:
 
                 await update.message.reply_document(
-                    document=media
+                    document=media,
                 )
 
         sent += 1
 
+    if sent == 0:
+
+        await msg.edit_text(
+            "❌ Файл ба Telegram фиристода нашуд."
+        )
+
+        return
+
     await msg.edit_text(
-        f"✅ Анҷом ёфт!\n\n"
+        "✅ Зеркашӣ анҷом ёфт!\n\n"
         f"📦 Файлҳои фиристодашуда: {sent}"
     )
 
 
 # =====================================
-# ERROR MESSAGES
+# ERROR HANDLER
 # =====================================
 
 def friendly_error(error):
 
     message = str(error)
 
-    if "Sign in to confirm you're not a bot" in message:
+    if isinstance(error, ValueError):
+        return message
 
+    if "401" in message or "403" in message:
         return (
-            "YouTube ин дархостро маҳдуд кард.\n"
-            "Сервер барои ин видео тасдиқи иловагӣ гирифта натавонист."
+            "❌ Instagram дастрасиро рад кард.\n"
+            "Шояд Post маҳдуд ё хусусӣ бошад."
         )
 
-    if "Private video" in message:
+    if "404" in message:
+        return "❌ Post ё Reels ёфт нашуд."
 
-        return "❌ Ин видео хусусӣ аст ё дастрас нест."
-
-    if "Video unavailable" in message:
-
-        return "❌ Видео дастрас нест."
-
-    if "Unsupported URL" in message:
-
-        return "❌ Ин пайванд дастгирӣ намешавад."
-
-    if "ffmpeg" in message.lower():
-
-        return "❌ FFmpeg ёфт нашуд."
-
-    if "Login error" in message or "feedback_required" in message:
-
+    if "429" in message:
         return (
-            "❌ Instagram дастрасиро маҳдуд кард. "
+            "❌ Instagram дархостҳоро маҳдуд кард. "
             "Баъдтар аз нав санҷ."
         )
 
-    if "401" in message or "403" in message:
-
-        return (
-            "❌ Платформа дастрасиро рад кард. "
-            "Пайванд ё иҷозати дастрасиро санҷ."
-        )
-
-    return message[:600]
+    return (
+        "❌ Боргирӣ иҷро нашуд.\n"
+        "Instagram метавонад дастрасиро маҳдуд карда бошад."
+    )
 
 
 # =====================================
 # MESSAGE HANDLER
 # =====================================
 
-async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
+async def handle_text(
+    update: Update,
+    context: ContextTypes.DEFAULT_TYPE
+):
 
     if not update.message or not update.message.text:
         return
 
     text = update.message.text.strip()
 
-    # INSTAGRAM BUTTON
-
     if text == BTN_INSTAGRAM:
-
-        context.user_data["mode"] = "instagram"
 
         await update.message.reply_text(
             "📸 Пайванди Instagram-ро фирист.\n\n"
-            "Дастгирӣ:\n"
-            "• Reels\n"
-            "• Post\n"
-            "• Carousel\n"
-            "• Stories: муайян мешавад, аммо зеркашӣ "
-            "дар ин версия дастгирӣ намешавад."
+            "Post, Reels ё Carousel."
         )
 
         return
 
-    # YOUTUBE MENU
+    # CHECK LINK
 
-    if text == BTN_YOUTUBE:
+    try:
 
-        context.user_data["mode"] = None
+        url, _ = extract_instagram_url(text)
+
+    except ValueError as error:
 
         await update.message.reply_text(
-            "▶️ Навъи YouTube-ро интихоб кун:",
-            reply_markup=YOUTUBE_MENU
+            "❌ " + str(error)
         )
 
         return
-
-    if text == BTN_VIDEO:
-
-        context.user_data["mode"] = "youtube_video"
-
-        await update.message.reply_text(
-            "🎬 Пайванди видеои YouTube-ро фирист."
-        )
-
-        return
-
-    if text == BTN_SHORTS:
-
-        context.user_data["mode"] = "youtube_shorts"
-
-        await update.message.reply_text(
-            "📱 Пайванди YouTube Shorts-ро фирист."
-        )
-
-        return
-
-    if text == BTN_MP3:
-
-        context.user_data["mode"] = "youtube_mp3"
-
-        await update.message.reply_text(
-            "🎧 Пайванди YouTube-ро барои MP3 фирист."
-        )
-
-        return
-
-    # TIKTOK BUTTON
-
-    if text == BTN_TIKTOK:
-
-        context.user_data["mode"] = "tiktok"
-
-        await update.message.reply_text(
-            "🎵 Пайванди видеои TikTok-ро фирист."
-        )
-
-        return
-
-    # BACK BUTTON
-
-    if text == BTN_BACK:
-
-        context.user_data["mode"] = None
-
-        await update.message.reply_text(
-            "🏠 Менюи асосӣ:",
-            reply_markup=MAIN_MENU
-        )
-
-        return
-
-    # CHECK URL
-
-    service = check_url(text)
-
-    if not service:
-
-        await update.message.reply_text(
-            "❌ Пайванд нодуруст аст.\n"
-            "Instagram, YouTube ё TikTok фирист."
-        )
-
-        return
-
-    mode = context.user_data.get("mode")
-
-    if service == "instagram":
-
-        mode = "instagram"
-
-    elif service == "youtube":
-
-        if mode not in (
-            "youtube_video",
-            "youtube_shorts",
-            "youtube_mp3"
-        ):
-
-            await update.message.reply_text(
-                "⬇️ Аввал тугмаи YouTube-ро интихоб кун.",
-                reply_markup=YOUTUBE_MENU
-            )
-
-            return
-
-        is_shorts = (
-            "/shorts/" in urlparse(text).path.lower()
-        )
-
-        if mode == "youtube_shorts" and not is_shorts:
-
-            await update.message.reply_text(
-                "❌ Ин пайванди Shorts нест."
-            )
-
-            return
-
-        if mode == "youtube_video" and is_shorts:
-
-            await update.message.reply_text(
-                "❌ Барои ин пайванд тугмаи YouTube Shorts-ро интихоб кун."
-            )
-
-            return
-
-    elif service == "tiktok":
-
-        mode = "tiktok"
 
     # PROCESSING
 
     msg = await update.message.reply_text(
-        "⏳ Дархост коркард шуда истодааст..."
+        "⏳ Instagram пайванд санҷида мешавад..."
     )
 
     folder = tempfile.mkdtemp(
-        prefix="turbo_"
+        prefix="instagram_"
     )
 
     try:
 
         loop = asyncio.get_running_loop()
 
-        if service == "instagram":
-
-            files = await loop.run_in_executor(
-                None,
-                download_instagram,
-                text,
-                folder
-            )
-
-        else:
-
-            files = await loop.run_in_executor(
-                None,
-                download_ytdlp,
-                text,
-                folder,
-                mode
-            )
+        files = await loop.run_in_executor(
+            None,
+            download_instagram,
+            url,
+            folder,
+        )
 
         await send_files(
             update,
             msg,
-            files
+            files,
         )
 
     except Exception as error:
 
         logger.exception(
-            "%s download failed",
-            service
+            "Instagram download failed"
         )
 
-        await msg.edit_text(
-            "❌ Боргирӣ иҷро нашуд.\n\n"
-            "Сабаб: " + friendly_error(error)
-        )
+        try:
+
+            await msg.edit_text(
+                "❌ Боргирӣ иҷро нашуд.\n\n"
+                "Сабаб: " + friendly_error(error)
+            )
+
+        except Exception:
+            logger.exception(
+                "Could not send error message"
+            )
 
     finally:
 
         shutil.rmtree(
             folder,
-            ignore_errors=True
+            ignore_errors=True,
         )
 
 
@@ -702,10 +500,9 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
 # MAIN
 # =====================================
 
-async def main():
+def main():
 
     if not TOKEN:
-
         raise RuntimeError(
             "BOT_TOKEN дар GitHub Secrets нест!"
         )
@@ -723,29 +520,18 @@ async def main():
     app.add_handler(
         MessageHandler(
             filters.TEXT & ~filters.COMMAND,
-            handle_text
+            handle_text,
         )
     )
 
     logger.info(
-        "TurboInstta Bot started successfully"
+        "Instagram Downloader started successfully"
     )
 
-    await app.initialize()
-    await app.start()
-    await app.updater.start_polling()
-
-    try:
-
-        await asyncio.Event().wait()
-
-    finally:
-
-        await app.updater.stop()
-        await app.stop()
-        await app.shutdown()
+    app.run_polling(
+        drop_pending_updates=True
+    )
 
 
 if __name__ == "__main__":
-
-    asyncio.run(main())
+    main()
