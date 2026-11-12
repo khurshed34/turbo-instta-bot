@@ -6,12 +6,11 @@ import logging
 import asyncio
 import tempfile
 import requests
-
 import instaloader
 import yt_dlp
 
 from urllib.parse import urlparse
-from telegram import Update
+from telegram import Update, ReplyKeyboardMarkup, KeyboardButton
 from telegram.ext import (
     Application,
     CommandHandler,
@@ -25,7 +24,6 @@ from telegram.ext import (
 # =====================================
 
 TOKEN = os.getenv("BOT_TOKEN")
-
 INSTAGRAM_USERNAME = os.getenv("INSTAGRAM_USERNAME")
 INSTAGRAM_PASSWORD = os.getenv("INSTAGRAM_PASSWORD")
 
@@ -46,6 +44,25 @@ logging.basicConfig(
 
 logger = logging.getLogger(__name__)
 
+# =====================================
+# MENU
+# =====================================
+
+BTN_INSTAGRAM = "📸 Instagram"
+BTN_VIDEO = "🎬 YouTube Видео"
+BTN_SHORTS = "📱 YouTube Shorts"
+BTN_MP3 = "🎵 YouTube MP3"
+BTN_BACK = "⬅️ Меню"
+
+MENU = ReplyKeyboardMarkup(
+    [
+        [KeyboardButton(BTN_INSTAGRAM)],
+        [KeyboardButton(BTN_VIDEO), KeyboardButton(BTN_SHORTS)],
+        [KeyboardButton(BTN_MP3)],
+    ],
+    resize_keyboard=True
+)
+
 
 # =====================================
 # START
@@ -53,19 +70,22 @@ logger = logging.getLogger(__name__)
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
+    context.user_data["mode"] = None
+
     await update.message.reply_text(
         "👋 Салом! Ман TurboInstta ҳастам.\n\n"
-        "🔗 Пайванди Instagram-ро фирист:\n\n"
-        "🎬 Reels ва видео\n"
-        "📸 Сурат\n"
-        "📚 Carousel\n"
-        "📲 Instagram Stories\n\n"
-        "⚠️ Танҳо маводи дастрас ва иҷозатдодашуда."
+        "Яке аз тугмаҳоро интихоб кун:\n\n"
+        "📸 Instagram — акс, Reels ва Carousel\n"
+        "🎬 YouTube Видео — видео бо овоз\n"
+        "📱 YouTube Shorts — Shorts\n"
+        "🎵 YouTube MP3 — аудио\n\n"
+        "⚠️ Танҳо маводи дастрас ва иҷозатдодашуда.",
+        reply_markup=MENU
     )
 
 
 # =====================================
-# DOWNLOAD DIRECT FILE
+# DIRECT DOWNLOAD
 # =====================================
 
 def download_file(url, path):
@@ -91,9 +111,7 @@ def download_file(url, path):
             total += len(chunk)
 
             if total > MAX_SIZE:
-                raise ValueError(
-                    "Андозаи файл аз 49 MB зиёд аст."
-                )
+                raise ValueError("Андозаи файл аз 49 MB зиёд аст.")
 
             f.write(chunk)
 
@@ -162,7 +180,6 @@ def download_story(url, folder):
     )
 
     results = []
-    index = 0
 
     stories = loader.get_stories(
         userids=[profile.userid]
@@ -172,20 +189,16 @@ def download_story(url, folder):
 
         for item in story.get_items():
 
-            if requested_id:
-                if str(item.mediaid) != requested_id:
-                    continue
+            if requested_id and str(item.mediaid) != requested_id:
+                continue
 
-            index += 1
+            index = len(results) + 1
 
             if item.is_video:
-
                 media_url = item.video_url
                 ext = ".mp4"
                 media_type = "video"
-
             else:
-
                 media_url = item.url
                 ext = ".jpg"
                 media_type = "photo"
@@ -195,14 +208,9 @@ def download_story(url, folder):
                 f"story_{index}{ext}"
             )
 
-            download_file(
-                media_url,
-                filename
-            )
+            download_file(media_url, filename)
 
-            results.append(
-                (filename, media_type)
-            )
+            results.append((filename, media_type))
 
     return results
 
@@ -233,22 +241,18 @@ def download_post(url, folder):
 
     results = []
 
-    # CAROUSEL
-
     if post.typename == "GraphSidecar":
 
-        nodes = post.get_sidecar_nodes()
-
-        for index, node in enumerate(nodes, start=1):
+        for index, node in enumerate(
+            post.get_sidecar_nodes(),
+            start=1
+        ):
 
             if node.is_video:
-
                 media_url = node.video_url
                 ext = ".mp4"
                 media_type = "video"
-
             else:
-
                 media_url = node.display_url
                 ext = ".jpg"
                 media_type = "photo"
@@ -258,41 +262,22 @@ def download_post(url, folder):
                 f"media_{index}{ext}"
             )
 
-            download_file(
-                media_url,
-                filename
-            )
-
-            results.append(
-                (filename, media_type)
-            )
+            download_file(media_url, filename)
+            results.append((filename, media_type))
 
         return results
 
-    # SINGLE PHOTO
-
     if not post.is_video:
 
-        filename = os.path.join(
-            folder,
-            "photo.jpg"
-        )
+        filename = os.path.join(folder, "photo.jpg")
 
-        download_file(
-            post.url,
-            filename
-        )
+        download_file(post.url, filename)
 
         return [(filename, "photo")]
 
-    # REELS / VIDEO
-
     options = {
         "format": "best[ext=mp4]/best",
-        "outtmpl": os.path.join(
-            folder,
-            "%(id)s.%(ext)s"
-        ),
+        "outtmpl": os.path.join(folder, "%(id)s.%(ext)s"),
         "noplaylist": True,
         "quiet": True,
         "no_warnings": True,
@@ -307,19 +292,13 @@ def download_post(url, folder):
 
         path = os.path.join(folder, filename)
 
-        if os.path.isfile(path):
-
-            if filename.endswith((".mp4", ".mkv", ".webm", ".mov")):
-                results.append(
-                    (path, "video")
-                )
+        if os.path.isfile(path) and filename.lower().endswith(
+            (".mp4", ".mkv", ".webm", ".mov")
+        ):
+            results.append((path, "video"))
 
     return results
 
-
-# =====================================
-# MAIN DOWNLOAD ROUTER
-# =====================================
 
 def download_instagram(url, folder):
 
@@ -331,133 +310,331 @@ def download_instagram(url, folder):
     ]
 
     if parts and parts[0].lower() == "stories":
+        return download_story(url, folder)
 
-        return download_story(
-            url,
-            folder
-        )
-
-    return download_post(
-        url,
-        folder
-    )
+    return download_post(url, folder)
 
 
 # =====================================
-# TELEGRAM HANDLER
+# YOUTUBE URL CHECK
 # =====================================
 
-async def handle_link(update: Update, context: ContextTypes.DEFAULT_TYPE):
+YOUTUBE_HOSTS = {
+    "youtube.com",
+    "www.youtube.com",
+    "m.youtube.com",
+    "music.youtube.com",
+    "youtu.be",
+}
 
-    if not update.message or not update.message.text:
-        return
 
-    url = update.message.text.strip()
+def is_youtube_url(url):
 
     parsed = urlparse(url)
 
     hostname = (parsed.hostname or "").lower()
 
-    if hostname not in (
-        "instagram.com",
-        "www.instagram.com",
-    ):
+    return (
+        parsed.scheme in ("http", "https")
+        and hostname in YOUTUBE_HOSTS
+    )
 
-        await update.message.reply_text(
-            "❌ Лутфан пайванди дурусти Instagram фирист."
+
+# =====================================
+# YOUTUBE DOWNLOAD
+# =====================================
+
+def download_youtube(url, folder, mode):
+
+    parsed = urlparse(url)
+
+    is_shorts = "/shorts/" in parsed.path.lower()
+
+    if mode == "shorts" and not is_shorts:
+        raise ValueError(
+            "Ин пайванди Shorts нест. "
+            "Пайванди YouTube Shorts фирист."
         )
 
+    if mode == "video" and is_shorts:
+        raise ValueError(
+            "Ин Shorts аст. Тугмаи YouTube Shorts-ро интихоб кун."
+        )
+
+    output = os.path.join(
+        folder,
+        "%(id)s.%(ext)s"
+    )
+
+    options = {
+        "outtmpl": output,
+        "noplaylist": True,
+        "quiet": True,
+        "no_warnings": True,
+        "max_filesize": MAX_SIZE,
+        "restrictfilenames": True,
+        "overwrites": True,
+    }
+
+    if mode in ("video", "shorts"):
+
+        options.update({
+            "format": (
+                "best[ext=mp4]/best"
+            ),
+            "merge_output_format": "mp4",
+        })
+
+    elif mode == "mp3":
+
+        options.update({
+            "format": "bestaudio/best",
+            "postprocessors": [{
+                "key": "FFmpegExtractAudio",
+                "preferredcodec": "mp3",
+                "preferredquality": "192",
+            }],
+        })
+
+    else:
+        raise ValueError("Навъи зеркашӣ нодуруст аст.")
+
+    with yt_dlp.YoutubeDL(options) as ydl:
+        ydl.download([url])
+
+    results = []
+
+    for filename in os.listdir(folder):
+
+        path = os.path.join(folder, filename)
+
+        if not os.path.isfile(path):
+            continue
+
+        if os.path.getsize(path) > MAX_SIZE:
+            raise ValueError(
+                "Файл аз 49 MB зиёд аст."
+            )
+
+        if mode == "mp3" and filename.lower().endswith(".mp3"):
+            results.append((path, "audio"))
+
+        elif mode in ("video", "shorts") and filename.lower().endswith(
+            (".mp4", ".mkv", ".webm", ".mov")
+        ):
+            results.append((path, "video"))
+
+    return results
+
+
+# =====================================
+# SEND FILES
+# =====================================
+
+async def send_files(update, msg, files, folder):
+
+    if not files:
+        await msg.edit_text(
+            "❌ Ягон файл ёфт нашуд."
+        )
         return
 
-    if not parsed.path:
+    await msg.edit_text(
+        f"📤 Ирсоли {len(files)} файл..."
+    )
+
+    sent = 0
+
+    for filename, media_type in files:
+
+        if not os.path.isfile(filename):
+            continue
+
+        size = os.path.getsize(filename)
+
+        if size > MAX_SIZE:
+            continue
+
+        with open(filename, "rb") as media:
+
+            if media_type == "photo" and size <= MAX_PHOTO_SIZE:
+
+                await update.message.reply_photo(
+                    photo=media
+                )
+
+            elif media_type == "video":
+
+                await update.message.reply_video(
+                    video=media,
+                    supports_streaming=True
+                )
+
+            elif media_type == "audio":
+
+                await update.message.reply_audio(
+                    audio=media,
+                    title="TurboInstta Audio"
+                )
+
+            else:
+
+                await update.message.reply_document(
+                    document=media
+                )
+
+        sent += 1
+
+    await msg.edit_text(
+        f"✅ Боргирӣ анҷом ёфт!\n\n"
+        f"📦 Файлҳои фиристодашуда: {sent}"
+    )
+
+
+# =====================================
+# MAIN HANDLER
+# =====================================
+
+async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
+
+    if not update.message or not update.message.text:
+        return
+
+    text = update.message.text.strip()
+
+    # MENU BUTTONS
+
+    if text == BTN_INSTAGRAM:
+        context.user_data["mode"] = "instagram"
+
         await update.message.reply_text(
-            "❌ Пайванд нодуруст аст."
+            "📸 Пайванди Instagram-ро фирист."
+        )
+        return
+
+    if text == BTN_VIDEO:
+        context.user_data["mode"] = "video"
+
+        await update.message.reply_text(
+            "🎬 Пайванди видеои YouTube-ро фирист.\n\n"
+            "⚠️ Танҳо видеоеро истифода бар, ки зеркашии он иҷозат дорад."
+        )
+        return
+
+    if text == BTN_SHORTS:
+        context.user_data["mode"] = "shorts"
+
+        await update.message.reply_text(
+            "📱 Пайванди YouTube Shorts-ро фирист."
+        )
+        return
+
+    if text == BTN_MP3:
+        context.user_data["mode"] = "mp3"
+
+        await update.message.reply_text(
+            "🎵 Пайванди YouTube-ро барои аудио фирист.\n\n"
+            "⚠️ Танҳо аудиоеро истифода бар, ки зеркашии он иҷозат дорад."
+        )
+        return
+
+    if text == BTN_BACK:
+        context.user_data["mode"] = None
+
+        await update.message.reply_text(
+            "🏠 Менюи асосӣ:",
+            reply_markup=MENU
+        )
+        return
+
+    url = text
+    parsed = urlparse(url)
+    hostname = (parsed.hostname or "").lower()
+
+    is_instagram = hostname in (
+        "instagram.com",
+        "www.instagram.com"
+    )
+
+    is_youtube = is_youtube_url(url)
+
+    mode = context.user_data.get("mode")
+
+    if is_instagram:
+        service = "instagram"
+
+    elif is_youtube:
+        service = "youtube"
+
+        if mode not in ("video", "shorts", "mp3"):
+            await update.message.reply_text(
+                "⬇️ Аввал яке аз тугмаҳои YouTube-ро интихоб кун.",
+                reply_markup=MENU
+            )
+            return
+
+    else:
+        await update.message.reply_text(
+            "❌ Пайванд нодуруст аст.\n"
+            "Instagram ё YouTube фирист."
         )
         return
 
     msg = await update.message.reply_text(
-        "⏳ Instagram-ро тафтиш карда истодаам..."
+        "⏳ Пайванд тафтиш шуда истодааст..."
     )
 
-    folder = tempfile.mkdtemp(
-        prefix="turbo_"
-    )
-
-    files = []
+    folder = tempfile.mkdtemp(prefix="turbo_")
 
     try:
 
         loop = asyncio.get_running_loop()
 
-        files = await loop.run_in_executor(
-            None,
-            download_instagram,
-            url,
-            folder
-        )
+        if service == "instagram":
 
-        if not files:
-
-            await msg.edit_text(
-                "❌ Ягон акс ё видео ёфт нашуд.\n\n"
-                "Шояд Story нест ё Instagram дастрасиро маҳдуд кардааст."
+            files = await loop.run_in_executor(
+                None,
+                download_instagram,
+                url,
+                folder
             )
 
-            return
+        else:
 
-        await msg.edit_text(
-            f"📤 Ирсоли {len(files)} файл..."
-        )
+            files = await loop.run_in_executor(
+                None,
+                download_youtube,
+                url,
+                folder,
+                mode
+            )
 
-        sent = 0
-
-        for filename, media_type in files:
-
-            if not os.path.isfile(filename):
-                continue
-
-            size = os.path.getsize(filename)
-
-            if size > MAX_SIZE:
-                continue
-
-            with open(filename, "rb") as media:
-
-                if media_type == "photo" and size <= MAX_PHOTO_SIZE:
-
-                    await update.message.reply_photo(
-                        photo=media
-                    )
-
-                elif media_type == "video":
-
-                    await update.message.reply_video(
-                        video=media,
-                        supports_streaming=True
-                    )
-
-                else:
-
-                    await update.message.reply_document(
-                        document=media
-                    )
-
-            sent += 1
-
-        await msg.edit_text(
-            f"✅ Боргирӣ анҷом ёфт!\n\n"
-            f"📦 Файлҳои фиристодашуда: {sent}"
+        await send_files(
+            update,
+            msg,
+            files,
+            folder
         )
 
     except Exception as error:
 
         logger.exception(
-            "Instagram download failed"
+            "%s download failed",
+            service
         )
 
+        error_text = str(error)
+
+        if "Login error" in error_text or "feedback_required" in error_text:
+            error_text = (
+                "Instagram воридшавии автоматиро рад кард. "
+                "Stories ҳоло дастрас нест. "
+                "Reels, акс ва Carousel-ро алоҳида санҷ."
+            )
+
         await msg.edit_text(
-            "❌ Боргирӣ нашуд.\n\n"
-            "Сабаб: " + str(error)[:700]
+            "❌ Боргирӣ иҷро нашуд.\n\n"
+            "Сабаб: " + error_text[:600]
         )
 
     finally:
@@ -475,7 +652,6 @@ async def handle_link(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def main():
 
     if not TOKEN:
-
         raise RuntimeError(
             "BOT_TOKEN дар GitHub Secrets нест!"
         )
@@ -487,16 +663,13 @@ async def main():
     )
 
     app.add_handler(
-        CommandHandler(
-            "start",
-            start
-        )
+        CommandHandler("start", start)
     )
 
     app.add_handler(
         MessageHandler(
             filters.TEXT & ~filters.COMMAND,
-            handle_link
+            handle_text
         )
     )
 
@@ -512,5 +685,4 @@ async def main():
 
 
 if __name__ == "__main__":
-
     asyncio.run(main())
