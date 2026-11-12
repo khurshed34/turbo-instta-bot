@@ -1,5 +1,5 @@
 
-name: TurboInstta Bot
+name: Instagram Downloader Bot
 
 on:
   workflow_dispatch:
@@ -8,7 +8,7 @@ on:
     - cron: "0 */5 * * *"
 
 concurrency:
-  group: turbo-instta-bot
+  group: instagram-downloader
   cancel-in-progress: true
 
 permissions:
@@ -16,62 +16,25 @@ permissions:
 
 jobs:
   run-bot:
-    name: Run TurboInstta
     runs-on: ubuntu-latest
-    timeout-minutes: 290
+
+    timeout-minutes: 350
 
     steps:
-      # 1. Гирифтани код
       - name: Checkout repository
         uses: actions/checkout@v4
 
-      # 2. Насби Python
       - name: Setup Python
         uses: actions/setup-python@v5
         with:
           python-version: "3.11"
-          cache: pip
-          cache-dependency-path: requirements.txt
 
-      # 3. Насби FFmpeg
-      - name: Install FFmpeg
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y ffmpeg
-          ffmpeg -version
-
-      # 4. Навсозии pip
-      - name: Upgrade pip
+      - name: Install dependencies
         run: |
           python -m pip install --upgrade pip
+          pip install -r requirements.txt
 
-      # 5. Насби китобхонаҳо
-      - name: Install requirements
-        run: |
-          python -m pip install -r requirements.txt
-
-      # 6. Санҷиши китобхонаҳо
-      - name: Check dependencies
-        run: |
-          python --version
-          python -c "import telegram, instaloader, requests, yt_dlp"
-          yt-dlp --version
-          ffmpeg -version
-
-      # 7. Санҷиши BOT_TOKEN
-      - name: Check BOT_TOKEN
+      - name: Start Instagram Bot
         env:
           BOT_TOKEN: ${{ secrets.BOT_TOKEN }}
-        run: |
-          if [ -z "$BOT_TOKEN" ]; then
-            echo "BOT_TOKEN is missing!"
-            exit 1
-          fi
-          echo "BOT_TOKEN is configured."
-
-      # 8. Оғози бот
-      - name: Start TurboInstta
-        env:
-          BOT_TOKEN: ${{ secrets.BOT_TOKEN }}
-        run: |
-          python -u main.py
+        run: python main.py
