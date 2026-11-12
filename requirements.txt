@@ -1,4 +1,4 @@
-
-python-telegram-bot>=21.0
+python-telegram-bot==21.10
 yt-dlp
-gallery-dl
+instaloader>=4.14
+requests
