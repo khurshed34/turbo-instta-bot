@@ -53,11 +53,23 @@ jobs:
       # 6. Санҷиши китобхонаҳо
       - name: Check dependencies
         run: |
-          python -m yt_dlp --version
-          python -c "import telebot" || true
+          python --version
+          python -c "import telegram, instaloader, requests, yt_dlp"
+          yt-dlp --version
           ffmpeg -version
 
-      # 7. Оғози бот
+      # 7. Санҷиши BOT_TOKEN
+      - name: Check BOT_TOKEN
+        env:
+          BOT_TOKEN: ${{ secrets.BOT_TOKEN }}
+        run: |
+          if [ -z "$BOT_TOKEN" ]; then
+            echo "BOT_TOKEN is missing!"
+            exit 1
+          fi
+          echo "BOT_TOKEN is configured."
+
+      # 8. Оғози бот
       - name: Start TurboInstta
         env:
           BOT_TOKEN: ${{ secrets.BOT_TOKEN }}
