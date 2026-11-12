@@ -1,12 +1,16 @@
 
 import os
+import re
+import shutil
 import logging
 import asyncio
-import shutil
-import subprocess
 import tempfile
-from urllib.parse import urlparse
+import requests
 
+import instaloader
+import yt_dlp
+
+from urllib.parse import urlparse
 from telegram import Update
 from telegram.ext import (
     Application,
@@ -15,261 +19,479 @@ from telegram.ext import (
     ContextTypes,
     filters,
 )
-import yt_dlp
+
+# =====================================
+# SETTINGS
+# =====================================
 
 TOKEN = os.getenv("BOT_TOKEN")
-INSTAGRAM_COOKIES = os.getenv("INSTAGRAM_COOKIES", "").strip()
+
+INSTAGRAM_USERNAME = os.getenv("INSTAGRAM_USERNAME")
+INSTAGRAM_PASSWORD = os.getenv("INSTAGRAM_PASSWORD")
 
 MAX_SIZE = 49 * 1024 * 1024
-MAX_FILES = 20
+MAX_PHOTO_SIZE = 10 * 1024 * 1024
 
-IMAGE_EXTENSIONS = {".jpg", ".jpeg", ".png", ".webp"}
-VIDEO_EXTENSIONS = {".mp4", ".mov", ".m4v", ".webm", ".mkv"}
+HEADERS = {
+    "User-Agent": (
+        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+        "AppleWebKit/537.36 Chrome/120.0 Safari/537.36"
+    )
+}
 
 logging.basicConfig(
     format="%(asctime)s - %(levelname)s - %(message)s",
     level=logging.INFO
 )
-logger = logging.getLogger("TurboInstta")
 
+logger = logging.getLogger(__name__)
+
+
+# =====================================
+# START
+# =====================================
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+
     await update.message.reply_text(
         "👋 Салом! Ман TurboInstta ҳастам.\n\n"
         "🔗 Пайванди Instagram-ро фирист:\n\n"
         "🎬 Reels ва видео\n"
-        "🖼 Суратҳо\n"
-        "📚 Carousel\n\n"
+        "📸 Сурат\n"
+        "📚 Carousel\n"
+        "📲 Instagram Stories\n\n"
         "⚠️ Танҳо маводи дастрас ва иҷозатдодашуда."
     )
 
 
-def find_files(folder):
-    result = []
+# =====================================
+# DOWNLOAD DIRECT FILE
+# =====================================
 
-    for root, dirs, names in os.walk(folder):
-        for name in names:
-            path = os.path.join(root, name)
-            ext = os.path.splitext(name)[1].lower()
+def download_file(url, path):
 
-            if (
-                os.path.isfile(path)
-                and ext in IMAGE_EXTENSIONS | VIDEO_EXTENSIONS
-                and os.path.getsize(path) > 0
-            ):
-                result.append(path)
+    response = requests.get(
+        url,
+        headers=HEADERS,
+        stream=True,
+        timeout=40
+    )
 
-    return sorted(result)
+    response.raise_for_status()
+
+    total = 0
+
+    with open(path, "wb") as f:
+
+        for chunk in response.iter_content(1024 * 256):
+
+            if not chunk:
+                continue
+
+            total += len(chunk)
+
+            if total > MAX_SIZE:
+                raise ValueError(
+                    "Андозаи файл аз 49 MB зиёд аст."
+                )
+
+            f.write(chunk)
+
+    return path
 
 
-def download_sync(url, folder):
-    errors = []
+# =====================================
+# INSTAGRAM LOGIN
+# =====================================
 
-    cookie_file = None
+def create_instagram_loader(login=False):
 
-    if INSTAGRAM_COOKIES:
-        cookie_file = os.path.join(folder, "cookies.txt")
+    loader = instaloader.Instaloader(
+        download_pictures=False,
+        download_videos=False,
+        download_video_thumbnails=False,
+        save_metadata=False,
+        compress_json=False,
+        quiet=True
+    )
 
-        with open(cookie_file, "w", encoding="utf-8") as f:
-            f.write(INSTAGRAM_COOKIES)
+    if login:
 
-        os.chmod(cookie_file, 0o600)
-        logger.info("Instagram Cookies configured")
-
-    # Усули якум: gallery-dl
-    gallery_dl = shutil.which("gallery-dl")
-
-    if gallery_dl:
-        try:
-            command = [
-                gallery_dl,
-                "--destination", folder,
-                "--filesize-max", "49M",
-            ]
-
-            if cookie_file:
-                command.extend(["--cookies", cookie_file])
-
-            command.append(url)
-
-            result = subprocess.run(
-                command,
-                capture_output=True,
-                text=True,
-                timeout=180
+        if not INSTAGRAM_USERNAME or not INSTAGRAM_PASSWORD:
+            raise ValueError(
+                "INSTAGRAM_USERNAME ё INSTAGRAM_PASSWORD "
+                "дар GitHub Secrets мавҷуд нест."
             )
 
-            files = find_files(folder)
-
-            if files:
-                logger.info("gallery-dl downloaded %d files", len(files))
-                return files
-
-            if result.stderr:
-                errors.append("gallery-dl: " + result.stderr[-500:])
-
-            if result.returncode != 0:
-                logger.warning("gallery-dl exited with code %s",
-                               result.returncode)
-
-        except subprocess.TimeoutExpired:
-            errors.append("gallery-dl: вақти зеркашӣ гузашт")
-        except Exception as error:
-            errors.append("gallery-dl: " + str(error))
-
-    # Усули дуюм: yt-dlp
-    try:
-        options = {
-            "format": "best[ext=mp4]/best",
-            "outtmpl": os.path.join(folder, "%(id)s.%(ext)s"),
-            "noplaylist": False,
-            "quiet": True,
-            "no_warnings": False,
-            "logger": logger,
-            "max_filesize": MAX_SIZE,
-            "retries": 3,
-            "fragment_retries": 3,
-            "socket_timeout": 30,
-            "ignoreerrors": False,
-        }
-
-        if cookie_file:
-            options["cookiefile"] = cookie_file
-
-        with yt_dlp.YoutubeDL(options) as ydl:
-            ydl.extract_info(url, download=True)
-
-    except Exception as error:
-        errors.append("yt-dlp: " + str(error))
-        logger.exception("yt-dlp download failed")
-
-    files = find_files(folder)
-
-    if files:
-        logger.info("yt-dlp downloaded %d files", len(files))
-        return files
-
-    if not INSTAGRAM_COOKIES:
-        errors.append(
-            "INSTAGRAM_COOKIES насб нашудааст. "
-            "Агар Instagram Login талаб кунад, Cookies лозим шуда метавонад."
+        loader.login(
+            INSTAGRAM_USERNAME,
+            INSTAGRAM_PASSWORD
         )
 
-    raise RuntimeError(
-        "Instagram файлро надод. " + " | ".join(errors)[-1500:]
+    return loader
+
+
+# =====================================
+# INSTAGRAM STORIES
+# =====================================
+
+def download_story(url, folder):
+
+    parsed = urlparse(url)
+
+    parts = [
+        p for p in parsed.path.strip("/").split("/")
+        if p
+    ]
+
+    if len(parts) < 2 or parts[0].lower() != "stories":
+        raise ValueError("Пайванди Stories нодуруст аст.")
+
+    username = parts[1]
+
+    if not re.fullmatch(r"[A-Za-z0-9_.]+", username):
+        raise ValueError("Номи аккаунти Instagram нодуруст аст.")
+
+    requested_id = parts[2] if len(parts) >= 3 else None
+
+    loader = create_instagram_loader(login=True)
+
+    profile = instaloader.Profile.from_username(
+        loader.context,
+        username
+    )
+
+    results = []
+    index = 0
+
+    stories = loader.get_stories(
+        userids=[profile.userid]
+    )
+
+    for story in stories:
+
+        for item in story.get_items():
+
+            if requested_id:
+                if str(item.mediaid) != requested_id:
+                    continue
+
+            index += 1
+
+            if item.is_video:
+
+                media_url = item.video_url
+                ext = ".mp4"
+                media_type = "video"
+
+            else:
+
+                media_url = item.url
+                ext = ".jpg"
+                media_type = "photo"
+
+            filename = os.path.join(
+                folder,
+                f"story_{index}{ext}"
+            )
+
+            download_file(
+                media_url,
+                filename
+            )
+
+            results.append(
+                (filename, media_type)
+            )
+
+    return results
+
+
+# =====================================
+# INSTAGRAM POSTS / REELS / CAROUSEL
+# =====================================
+
+def download_post(url, folder):
+
+    match = re.search(
+        r"instagram\.com/(?:p|reel|reels|tv)/([A-Za-z0-9_-]+)",
+        url,
+        re.IGNORECASE
+    )
+
+    if not match:
+        raise ValueError("Пайванди пост нодуруст аст.")
+
+    shortcode = match.group(1)
+
+    loader = create_instagram_loader()
+
+    post = instaloader.Post.from_shortcode(
+        loader.context,
+        shortcode
+    )
+
+    results = []
+
+    # CAROUSEL
+
+    if post.typename == "GraphSidecar":
+
+        nodes = post.get_sidecar_nodes()
+
+        for index, node in enumerate(nodes, start=1):
+
+            if node.is_video:
+
+                media_url = node.video_url
+                ext = ".mp4"
+                media_type = "video"
+
+            else:
+
+                media_url = node.display_url
+                ext = ".jpg"
+                media_type = "photo"
+
+            filename = os.path.join(
+                folder,
+                f"media_{index}{ext}"
+            )
+
+            download_file(
+                media_url,
+                filename
+            )
+
+            results.append(
+                (filename, media_type)
+            )
+
+        return results
+
+    # SINGLE PHOTO
+
+    if not post.is_video:
+
+        filename = os.path.join(
+            folder,
+            "photo.jpg"
+        )
+
+        download_file(
+            post.url,
+            filename
+        )
+
+        return [(filename, "photo")]
+
+    # REELS / VIDEO
+
+    options = {
+        "format": "best[ext=mp4]/best",
+        "outtmpl": os.path.join(
+            folder,
+            "%(id)s.%(ext)s"
+        ),
+        "noplaylist": True,
+        "quiet": True,
+        "no_warnings": True,
+        "max_filesize": MAX_SIZE,
+        "merge_output_format": "mp4",
+    }
+
+    with yt_dlp.YoutubeDL(options) as ydl:
+        ydl.download([url])
+
+    for filename in os.listdir(folder):
+
+        path = os.path.join(folder, filename)
+
+        if os.path.isfile(path):
+
+            if filename.endswith((".mp4", ".mkv", ".webm", ".mov")):
+                results.append(
+                    (path, "video")
+                )
+
+    return results
+
+
+# =====================================
+# MAIN DOWNLOAD ROUTER
+# =====================================
+
+def download_instagram(url, folder):
+
+    parsed = urlparse(url)
+
+    parts = [
+        p for p in parsed.path.strip("/").split("/")
+        if p
+    ]
+
+    if parts and parts[0].lower() == "stories":
+
+        return download_story(
+            url,
+            folder
+        )
+
+    return download_post(
+        url,
+        folder
     )
 
 
-async def download_instagram(url, folder):
-    return await asyncio.to_thread(download_sync, url, folder)
-
+# =====================================
+# TELEGRAM HANDLER
+# =====================================
 
 async def handle_link(update: Update, context: ContextTypes.DEFAULT_TYPE):
+
     if not update.message or not update.message.text:
         return
 
     url = update.message.text.strip()
 
-    try:
-        parsed = urlparse(url)
+    parsed = urlparse(url)
 
-        if parsed.scheme not in ("http", "https") or parsed.hostname not in (
-            "instagram.com",
-            "www.instagram.com",
-            "m.instagram.com",
-        ):
-            await update.message.reply_text(
-                "❌ Лутфан пайванди дурусти Instagram фирист."
-            )
-            return
+    hostname = (parsed.hostname or "").lower()
 
-        msg = await update.message.reply_text(
-            "⏳ Маводро меҷӯям...\n"
-            "Лутфан каме интизор шав."
+    if hostname not in (
+        "instagram.com",
+        "www.instagram.com",
+    ):
+
+        await update.message.reply_text(
+            "❌ Лутфан пайванди дурусти Instagram фирист."
         )
 
-        with tempfile.TemporaryDirectory() as folder:
-            files = await download_instagram(url, folder)
+        return
 
-            if not files:
-                await msg.edit_text("❌ Ягон файл ёфт нашуд.")
-                return
+    if not parsed.path:
+        await update.message.reply_text(
+            "❌ Пайванд нодуруст аст."
+        )
+        return
 
-            await msg.edit_text("📤 Файлҳо фиристода мешаванд...")
+    msg = await update.message.reply_text(
+        "⏳ Instagram-ро тафтиш карда истодаам..."
+    )
 
-            sent = 0
-            skipped = 0
+    folder = tempfile.mkdtemp(
+        prefix="turbo_"
+    )
 
-            for filename in files[:MAX_FILES]:
-                size = os.path.getsize(filename)
+    files = []
 
-                if size > MAX_SIZE:
-                    skipped += 1
-                    continue
+    try:
 
-                ext = os.path.splitext(filename)[1].lower()
+        loop = asyncio.get_running_loop()
 
-                try:
-                    with open(filename, "rb") as media:
-                        if ext in {".jpg", ".jpeg", ".png"}:
-                            if size <= 10 * 1024 * 1024:
-                                await update.message.reply_photo(
-                                    photo=media
-                                )
-                            else:
-                                await update.message.reply_document(
-                                    document=media
-                                )
+        files = await loop.run_in_executor(
+            None,
+            download_instagram,
+            url,
+            folder
+        )
 
-                        elif ext == ".webp":
-                            await update.message.reply_document(
-                                document=media
-                            )
-
-                        elif ext in VIDEO_EXTENSIONS:
-                            await update.message.reply_video(
-                                video=media,
-                                supports_streaming=True
-                            )
-
-                        sent += 1
-
-                except Exception:
-                    logger.exception(
-                        "Telegram file sending failed: %s", filename
-                    )
-                    skipped += 1
-
-            if len(files) > MAX_FILES:
-                skipped += len(files) - MAX_FILES
+        if not files:
 
             await msg.edit_text(
-                "✅ Боргирӣ анҷом ёфт!\n\n"
-                f"📥 Фиристода шуд: {sent}\n"
-                f"⚠️ Фиристода нашуд: {skipped}"
+                "❌ Ягон акс ё видео ёфт нашуд.\n\n"
+                "Шояд Story нест ё Instagram дастрасиро маҳдуд кардааст."
             )
+
+            return
+
+        await msg.edit_text(
+            f"📤 Ирсоли {len(files)} файл..."
+        )
+
+        sent = 0
+
+        for filename, media_type in files:
+
+            if not os.path.isfile(filename):
+                continue
+
+            size = os.path.getsize(filename)
+
+            if size > MAX_SIZE:
+                continue
+
+            with open(filename, "rb") as media:
+
+                if media_type == "photo" and size <= MAX_PHOTO_SIZE:
+
+                    await update.message.reply_photo(
+                        photo=media
+                    )
+
+                elif media_type == "video":
+
+                    await update.message.reply_video(
+                        video=media,
+                        supports_streaming=True
+                    )
+
+                else:
+
+                    await update.message.reply_document(
+                        document=media
+                    )
+
+            sent += 1
+
+        await msg.edit_text(
+            f"✅ Боргирӣ анҷом ёфт!\n\n"
+            f"📦 Файлҳои фиристодашуда: {sent}"
+        )
 
     except Exception as error:
-        logger.exception("Instagram download failed")
 
-        try:
-            await msg.edit_text(
-                "❌ Боргирӣ нашуд.\n\n"
-                "Сабаб: " + str(error)[:2500]
-            )
-        except Exception:
-            await update.message.reply_text(
-                "❌ Хатогӣ: " + str(error)[:1000]
-            )
+        logger.exception(
+            "Instagram download failed"
+        )
 
+        await msg.edit_text(
+            "❌ Боргирӣ нашуд.\n\n"
+            "Сабаб: " + str(error)[:700]
+        )
+
+    finally:
+
+        shutil.rmtree(
+            folder,
+            ignore_errors=True
+        )
+
+
+# =====================================
+# MAIN
+# =====================================
 
 async def main():
+
     if not TOKEN:
-        raise RuntimeError("BOT_TOKEN дар GitHub Secrets нест!")
 
-    app = Application.builder().token(TOKEN).build()
+        raise RuntimeError(
+            "BOT_TOKEN дар GitHub Secrets нест!"
+        )
 
-    app.add_handler(CommandHandler("start", start))
+    app = (
+        Application.builder()
+        .token(TOKEN)
+        .build()
+    )
+
+    app.add_handler(
+        CommandHandler(
+            "start",
+            start
+        )
+    )
 
     app.add_handler(
         MessageHandler(
@@ -278,19 +500,17 @@ async def main():
         )
     )
 
-    logger.info("TurboInstta started")
+    logger.info(
+        "TurboInstta started successfully"
+    )
 
     await app.initialize()
     await app.start()
     await app.updater.start_polling()
 
-    try:
-        await asyncio.Event().wait()
-    finally:
-        await app.updater.stop()
-        await app.stop()
-        await app.shutdown()
+    await asyncio.Event().wait()
 
 
 if __name__ == "__main__":
+
     asyncio.run(main())
