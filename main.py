@@ -143,12 +143,18 @@ def download_instagram(url, folder):
     if not parts:
         raise ValueError("Пайванди Instagram нодуруст аст.")
 
+    # STORIES
     if parts[0].lower() == "stories":
+
         raise ValueError(
-            "Instagram Stories ҳоло дастрас нест. "
-            "Воридшавии автоматиро Instagram рад мекунад."
+            "📖 Instagram Story муайян шуд.\n\n"
+            "Ин версия ҳоло зеркашии Stories-ро дастгирӣ "
+            "намекунад. Барои Story дастрасии расмӣ ва "
+            "иҷозатдодашуда лозим аст.\n\n"
+            "Аккаунтҳои Private дастгирӣ намешаванд."
         )
 
+    # POST / REEL / CAROUSEL
     match = re.search(
         r"instagram\.com/(?:p|reel|reels|tv)/([A-Za-z0-9_-]+)",
         url,
@@ -156,8 +162,10 @@ def download_instagram(url, folder):
     )
 
     if not match:
+
         raise ValueError(
-            "Пайванди Instagram бояд ба Post, Reel ё Carousel бошад."
+            "Пайванди Instagram нодуруст аст.\n"
+            "Post, Reel ё Carousel фирист."
         )
 
     shortcode = match.group(1)
@@ -188,10 +196,13 @@ def download_instagram(url, folder):
         ):
 
             if node.is_video:
+
                 media_url = node.video_url
                 ext = ".mp4"
                 media_type = "video"
+
             else:
+
                 media_url = node.display_url
                 ext = ".jpg"
                 media_type = "photo"
@@ -320,9 +331,11 @@ def download_ytdlp(url, folder, mode):
         })
 
     else:
+
         raise ValueError("Навъи зеркашӣ нодуруст аст.")
 
     with yt_dlp.YoutubeDL(options) as ydl:
+
         ydl.download([url])
 
     results = []
@@ -347,9 +360,11 @@ def download_ytdlp(url, folder, mode):
                 results.append((path, "audio"))
 
         elif ext == ".mp4":
+
             results.append((path, "video"))
 
         elif ext in (".mkv", ".webm", ".mov"):
+
             results.append((path, "document"))
 
     return results
@@ -362,9 +377,11 @@ def download_ytdlp(url, folder, mode):
 async def send_files(update, msg, files):
 
     if not files:
+
         await msg.edit_text(
             "❌ Ягон файл ёфт нашуд."
         )
+
         return
 
     await msg.edit_text(
@@ -428,27 +445,40 @@ def friendly_error(error):
     message = str(error)
 
     if "Sign in to confirm you're not a bot" in message:
+
         return (
             "YouTube ин дархостро маҳдуд кард.\n"
-            "Сервери бот барои ин видео тасдиқи иловагӣ гирифта натавонист."
+            "Сервер барои ин видео тасдиқи иловагӣ гирифта натавонист."
         )
 
     if "Private video" in message:
+
         return "❌ Ин видео хусусӣ аст ё дастрас нест."
 
     if "Video unavailable" in message:
+
         return "❌ Видео дастрас нест."
 
     if "Unsupported URL" in message:
+
         return "❌ Ин пайванд дастгирӣ намешавад."
 
     if "ffmpeg" in message.lower():
-        return "❌ FFmpeg ёфт нашуд. Насби FFmpeg-ро дар bot.yml санҷ."
+
+        return "❌ FFmpeg ёфт нашуд."
 
     if "Login error" in message or "feedback_required" in message:
+
         return (
-            "❌ Instagram воридшавии автоматиро рад кард. "
-            "Stories ҳоло кор намекунад."
+            "❌ Instagram дастрасиро маҳдуд кард. "
+            "Баъдтар аз нав санҷ."
+        )
+
+    if "401" in message or "403" in message:
+
+        return (
+            "❌ Платформа дастрасиро рад кард. "
+            "Пайванд ё иҷозати дастрасиро санҷ."
         )
 
     return message[:600]
@@ -476,8 +506,11 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
             "Дастгирӣ:\n"
             "• Reels\n"
             "• Post\n"
-            "• Carousel"
+            "• Carousel\n"
+            "• Stories: муайян мешавад, аммо зеркашӣ "
+            "дар ин версия дастгирӣ намешавад."
         )
+
         return
 
     # YOUTUBE MENU
@@ -490,6 +523,7 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
             "▶️ Навъи YouTube-ро интихоб кун:",
             reply_markup=YOUTUBE_MENU
         )
+
         return
 
     if text == BTN_VIDEO:
@@ -499,6 +533,7 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text(
             "🎬 Пайванди видеои YouTube-ро фирист."
         )
+
         return
 
     if text == BTN_SHORTS:
@@ -508,6 +543,7 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text(
             "📱 Пайванди YouTube Shorts-ро фирист."
         )
+
         return
 
     if text == BTN_MP3:
@@ -517,6 +553,7 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text(
             "🎧 Пайванди YouTube-ро барои MP3 фирист."
         )
+
         return
 
     # TIKTOK BUTTON
@@ -528,6 +565,7 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text(
             "🎵 Пайванди видеои TikTok-ро фирист."
         )
+
         return
 
     # BACK BUTTON
@@ -540,6 +578,7 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
             "🏠 Менюи асосӣ:",
             reply_markup=MAIN_MENU
         )
+
         return
 
     # CHECK URL
@@ -552,6 +591,7 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
             "❌ Пайванд нодуруст аст.\n"
             "Instagram, YouTube ё TikTok фирист."
         )
+
         return
 
     mode = context.user_data.get("mode")
@@ -572,15 +612,19 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 "⬇️ Аввал тугмаи YouTube-ро интихоб кун.",
                 reply_markup=YOUTUBE_MENU
             )
+
             return
 
-        is_shorts = "/shorts/" in urlparse(text).path.lower()
+        is_shorts = (
+            "/shorts/" in urlparse(text).path.lower()
+        )
 
         if mode == "youtube_shorts" and not is_shorts:
 
             await update.message.reply_text(
                 "❌ Ин пайванди Shorts нест."
             )
+
             return
 
         if mode == "youtube_video" and is_shorts:
@@ -588,11 +632,14 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await update.message.reply_text(
                 "❌ Барои ин пайванд тугмаи YouTube Shorts-ро интихоб кун."
             )
+
             return
 
     elif service == "tiktok":
 
         mode = "tiktok"
+
+    # PROCESSING
 
     msg = await update.message.reply_text(
         "⏳ Дархост коркард шуда истодааст..."
@@ -658,6 +705,7 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def main():
 
     if not TOKEN:
+
         raise RuntimeError(
             "BOT_TOKEN дар GitHub Secrets нест!"
         )
@@ -680,15 +728,24 @@ async def main():
     )
 
     logger.info(
-        "TurboInstta 3-in-1 started successfully"
+        "TurboInstta Bot started successfully"
     )
 
     await app.initialize()
     await app.start()
     await app.updater.start_polling()
 
-    await asyncio.Event().wait()
+    try:
+
+        await asyncio.Event().wait()
+
+    finally:
+
+        await app.updater.stop()
+        await app.stop()
+        await app.shutdown()
 
 
 if __name__ == "__main__":
+
     asyncio.run(main())
