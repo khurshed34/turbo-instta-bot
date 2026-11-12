@@ -18,23 +18,22 @@ jobs:
   run-bot:
     name: Run TurboInstta
     runs-on: ubuntu-latest
-
-    timeout-minutes: 350
+    timeout-minutes: 290
 
     steps:
-      # 1. Гирифтани код аз GitHub
-      - name: Get repository code
+      # 1. Гирифтани код
+      - name: Checkout repository
         uses: actions/checkout@v4
 
       # 2. Насби Python
-      - name: Install Python
+      - name: Setup Python
         uses: actions/setup-python@v5
         with:
           python-version: "3.11"
-          cache: "pip"
+          cache: pip
           cache-dependency-path: requirements.txt
 
-      # 3. Насби FFmpeg барои MP3
+      # 3. Насби FFmpeg
       - name: Install FFmpeg
         run: |
           sudo apt-get update
@@ -46,22 +45,21 @@ jobs:
         run: |
           python -m pip install --upgrade pip
 
-      # 5. Насби китобхонаҳои бот
+      # 5. Насби китобхонаҳо
       - name: Install requirements
         run: |
-          pip install -r requirements.txt
+          python -m pip install -r requirements.txt
 
-      # 6. Санҷиши yt-dlp ва FFmpeg
+      # 6. Санҷиши китобхонаҳо
       - name: Check dependencies
         run: |
           python -m yt_dlp --version
+          python -c "import telebot" || true
           ffmpeg -version
 
       # 7. Оғози бот
       - name: Start TurboInstta
         env:
           BOT_TOKEN: ${{ secrets.BOT_TOKEN }}
-          INSTAGRAM_USERNAME: ${{ secrets.INSTAGRAM_USERNAME }}
-          INSTAGRAM_PASSWORD: ${{ secrets.INSTAGRAM_PASSWORD }}
         run: |
           python -u main.py
