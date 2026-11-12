@@ -1,8 +1,16 @@
 
 import os
+import re
+import shutil
 import logging
 import asyncio
-from io import BytesIO
+import tempfile
+import requests
+
+import instaloader
+import yt_dlp
+
+from urllib.parse import urlparse
 from telegram import Update
 from telegram.ext import (
     Application,
@@ -11,7 +19,6 @@ from telegram.ext import (
     ContextTypes,
     filters,
 )
-import yt_dlp
 
 TOKEN = os.getenv("BOT_TOKEN")
 
@@ -22,113 +29,251 @@ logging.basicConfig(
 
 logger = logging.getLogger(__name__)
 
+MAX_SIZE = 49 * 1024 * 1024
+HEADERS = {
+    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/120.0 Safari/537.36"
+}
+
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(
         "👋 Салом! Ман TurboInstta ҳастам.\n\n"
-        "🔗 Пайванди Instagram-ро фирист:\n"
-        "🎬 Reels\n"
-        "📹 Видео\n"
-        "🖼 Сурат\n"
-        "📚 Carousel\n\n"
+        "🔗 Пайванди Instagram-ро фирист:\n\n"
+        "🎬 Reels ва видео\n"
+        "📸 Сурат\n"
+        "📚 Carousel (ҳамаи аксҳо)\n\n"
         "⚠️ Танҳо маводи дастрас ва иҷозатдодашуда."
     )
 
 
-async def download_instagram(url):
-    loop = asyncio.get_running_loop()
+def download_file(url, path):
+    response = requests.get(
+        url,
+        headers=HEADERS,
+        stream=True,
+        timeout=40
+    )
+    response.raise_for_status()
 
-    def work():
-        options = {
-            "format": "best",
-            "outtmpl": "/tmp/%(id)s.%(ext)s",
-            "noplaylist": False,
-            "quiet": True,
-            "no_warnings": True,
-            "max_filesize": 49 * 1024 * 1024,
-        }
+    total = 0
 
-        with yt_dlp.YoutubeDL(options) as ydl:
-            info = ydl.extract_info(url, download=True)
+    with open(path, "wb") as f:
+        for chunk in response.iter_content(1024 * 256):
+            if not chunk:
+                continue
 
-        entries = info.get("entries") or [info]
-        files = []
+            total += len(chunk)
 
-        for entry in entries:
-            filename = ydl.prepare_filename(entry)
-            if os.path.isfile(filename):
-                files.append(filename)
+            if total > MAX_SIZE:
+                raise ValueError("Андозаи файл аз ҳад зиёд аст.")
 
-        return files
+            f.write(chunk)
 
-    return await loop.run_in_executor(None, work)
+    return path
 
 
-async def handle_link(update: Update, context: ContextTypes.DEFAULT_TYPE):
+def download_instagram(url, folder):
+    match = re.search(
+        r"instagram\.com/(?:p|reel|reels|tv)/([A-Za-z0-9_-]+)",
+        url
+    )
+
+    if not match:
+        raise ValueError("Пайванди Instagram нодуруст аст.")
+
+    shortcode = match.group(1)
+
+    loader = instaloader.Instaloader(
+        download_pictures=False,
+        download_videos=False,
+        download_video_thumbnails=False,
+        save_metadata=False,
+        compress_json=False,
+        quiet=True
+    )
+
+    post = instaloader.Post.from_shortcode(
+        loader.context,
+        shortcode
+    )
+
+    results = []
+
+    # Карусел
+    if post.typename == "GraphSidecar":
+        nodes = post.get_sidecar_nodes()
+
+        for index, node in enumerate(nodes, start=1):
+
+            if node.is_video:
+                media_url = node.video_url
+                ext = ".mp4"
+                media_type = "video"
+            else:
+                media_url = node.display_url
+                ext = ".jpg"
+                media_type = "photo"
+
+            filename = os.path.join(
+                folder,
+                f"media_{index}{ext}"
+            )
+
+            download_file(media_url, filename)
+            results.append((filename, media_type))
+
+        return results
+
+    # Як сурат
+    if not post.is_video:
+        filename = os.path.join(folder, "photo.jpg")
+
+        download_file(post.url, filename)
+
+        results.append((filename, "photo"))
+        return results
+
+    # Reels ё видео
+    options = {
+        "format": "best[ext=mp4]/best",
+        "outtmpl": os.path.join(folder, "%(id)s.%(ext)s"),
+        "noplaylist": True,
+        "quiet": True,
+        "no_warnings": True,
+        "max_filesize": MAX_SIZE,
+        "merge_output_format": "mp4",
+    }
+
+    with yt_dlp.YoutubeDL(options) as ydl:
+        ydl.download([url])
+
+    for filename in os.listdir(folder):
+        path = os.path.join(folder, filename)
+
+        if os.path.isfile(path):
+            results.append((path, "video"))
+
+    return results
+
+
+async def handle_link(
+    update: Update,
+    context: ContextTypes.DEFAULT_TYPE
+):
+    if not update.message or not update.message.text:
+        return
+
     url = update.message.text.strip()
 
-    if "instagram.com/" not in url:
+    parsed = urlparse(url)
+
+    if parsed.hostname not in (
+        "instagram.com",
+        "www.instagram.com",
+    ):
         await update.message.reply_text(
             "❌ Лутфан пайванди дурусти Instagram фирист."
         )
         return
 
     msg = await update.message.reply_text(
-        "⏳ Маводро меҷӯям, каме интизор шав..."
+        "⏳ Instagram-ро тафтиш карда истодаам..."
     )
 
-    files = []
+    folder = tempfile.mkdtemp(prefix="turbo_")
 
     try:
-        files = await download_instagram(url)
+        loop = asyncio.get_running_loop()
+
+        files = await loop.run_in_executor(
+            None,
+            download_instagram,
+            url,
+            folder
+        )
 
         if not files:
             await msg.edit_text(
-                "❌ Мавод ёфт нашуд ё Instagram дастрасиро маҳдуд кард."
+                "❌ Ягон акс ё видео ёфт нашуд."
             )
             return
 
-        await msg.edit_text("📤 Ирсоли файлҳо...")
+        await msg.edit_text(
+            f"📤 Ирсоли {len(files)} файл..."
+        )
 
-        for filename in files:
+        sent = 0
+
+        for filename, media_type in files:
+
+            if not os.path.isfile(filename):
+                continue
+
+            size = os.path.getsize(filename)
+
+            if size > MAX_SIZE:
+                continue
+
             with open(filename, "rb") as media:
-                if filename.lower().endswith((".jpg", ".jpeg", ".png", ".webp")):
-                    await update.message.reply_photo(photo=media)
-                else:
-                    await update.message.reply_video(video=media)
 
-        await msg.delete()
+                if media_type == "photo" and size <= 10 * 1024 * 1024:
+                    await update.message.reply_photo(
+                        photo=media
+                    )
+
+                elif media_type == "video":
+                    await update.message.reply_video(
+                        video=media,
+                        supports_streaming=True
+                    )
+
+                else:
+                    await update.message.reply_document(
+                        document=media
+                    )
+
+            sent += 1
+
+        await msg.edit_text(
+            f"✅ Боргирӣ анҷом ёфт!\n\n"
+            f"📦 Файлҳои фиристодашуда: {sent}"
+        )
 
     except Exception as error:
         logger.exception("Instagram download failed")
+
         await msg.edit_text(
-            "❌ Боргирӣ нашуд.\n"
+            "❌ Боргирӣ нашуд.\n\n"
             "Сабаб: " + str(error)[:700]
         )
 
     finally:
-        for filename in files:
-            try:
-                os.remove(filename)
-            except OSError:
-                pass
+        shutil.rmtree(folder, ignore_errors=True)
 
 
 async def main():
     if not TOKEN:
-        raise RuntimeError("BOT_TOKEN дар GitHub Secrets нест!")
+        raise RuntimeError(
+            "BOT_TOKEN дар GitHub Secrets нест!"
+        )
 
     app = Application.builder().token(TOKEN).build()
 
     app.add_handler(CommandHandler("start", start))
+
     app.add_handler(
-        MessageHandler(filters.TEXT & ~filters.COMMAND, handle_link)
+        MessageHandler(
+            filters.TEXT & ~filters.COMMAND,
+            handle_link
+        )
     )
 
     logger.info("TurboInstta started")
+
     await app.initialize()
     await app.start()
     await app.updater.start_polling()
+
     await asyncio.Event().wait()
 
 
