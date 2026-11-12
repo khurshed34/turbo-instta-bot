@@ -1,8 +1,12 @@
 
 import os
+import sys
 import logging
 import asyncio
-from io import BytesIO
+import shutil
+import subprocess
+import tempfile
+
 from telegram import Update
 from telegram.ext import (
     Application,
@@ -19,49 +23,98 @@ logging.basicConfig(
     format="%(asctime)s - %(levelname)s - %(message)s",
     level=logging.INFO
 )
-
 logger = logging.getLogger(__name__)
+
+IMAGE_EXTENSIONS = {".jpg", ".jpeg", ".png", ".webp"}
+VIDEO_EXTENSIONS = {".mp4", ".mov", ".m4v", ".webm", ".mkv"}
 
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(
         "👋 Салом! Ман TurboInstta ҳастам.\n\n"
         "🔗 Пайванди Instagram-ро фирист:\n"
-        "🎬 Reels\n"
-        "📹 Видео\n"
-        "🖼 Сурат\n"
+        "🎬 Reels ва видео\n"
+        "🖼 Суратҳо\n"
         "📚 Carousel\n\n"
         "⚠️ Танҳо маводи дастрас ва иҷозатдодашуда."
     )
 
 
-async def download_instagram(url):
-    loop = asyncio.get_running_loop()
+def find_files(folder):
+    files = []
 
-    def work():
+    for root, dirs, names in os.walk(folder):
+        for name in names:
+            path = os.path.join(root, name)
+
+            if os.path.isfile(path):
+                ext = os.path.splitext(name)[1].lower()
+
+                if ext in IMAGE_EXTENSIONS or ext in VIDEO_EXTENSIONS:
+                    files.append(path)
+
+    return sorted(files)
+
+
+def download_sync(url, folder):
+    errors = []
+
+    # Аввал суратҳо ва галереяҳоро месанҷем
+    gallery_dl = shutil.which("gallery-dl")
+
+    if gallery_dl:
+        try:
+            result = subprocess.run(
+                [gallery_dl, "-d", folder, url],
+                capture_output=True,
+                text=True,
+                timeout=180
+            )
+
+            files = find_files(folder)
+
+            if files:
+                return files
+
+            if result.stderr:
+                errors.append(result.stderr[-500:])
+
+        except Exception as error:
+            errors.append(str(error))
+
+    # Агар gallery-dl файл наёбад, yt-dlp-ро месанҷем
+    try:
         options = {
             "format": "best",
-            "outtmpl": "/tmp/%(id)s.%(ext)s",
+            "outtmpl": os.path.join(folder, "%(id)s.%(ext)s"),
             "noplaylist": False,
             "quiet": True,
             "no_warnings": True,
             "max_filesize": 49 * 1024 * 1024,
+            "retries": 2,
+            "fragment_retries": 2,
+            "ignoreerrors": True,
         }
 
         with yt_dlp.YoutubeDL(options) as ydl:
-            info = ydl.extract_info(url, download=True)
+            ydl.extract_info(url, download=True)
 
-        entries = info.get("entries") or [info]
-        files = []
+    except Exception as error:
+        errors.append(str(error))
 
-        for entry in entries:
-            filename = ydl.prepare_filename(entry)
-            if os.path.isfile(filename):
-                files.append(filename)
+    files = find_files(folder)
 
+    if files:
         return files
 
-    return await loop.run_in_executor(None, work)
+    raise RuntimeError(
+        "Instagram файлро надод. "
+        + " | ".join(errors)[-700:]
+    )
+
+
+async def download_instagram(url, folder):
+    return await asyncio.to_thread(download_sync, url, folder)
 
 
 async def handle_link(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -77,41 +130,58 @@ async def handle_link(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "⏳ Маводро меҷӯям, каме интизор шав..."
     )
 
-    files = []
-
     try:
-        files = await download_instagram(url)
+        with tempfile.TemporaryDirectory() as folder:
+            files = await download_instagram(url, folder)
 
-        if not files:
+            if not files:
+                await msg.edit_text("❌ Ягон файл ёфт нашуд.")
+                return
+
+            await msg.edit_text("📤 Файлҳо фиристода мешаванд...")
+
+            sent = 0
+            skipped = 0
+
+            for filename in files[:20]:
+                size = os.path.getsize(filename)
+
+                if size > 49 * 1024 * 1024:
+                    skipped += 1
+                    continue
+
+                ext = os.path.splitext(filename)[1].lower()
+
+                try:
+                    with open(filename, "rb") as media:
+                        if ext in IMAGE_EXTENSIONS:
+                            if size <= 10 * 1024 * 1024:
+                                await update.message.reply_photo(photo=media)
+                            else:
+                                await update.message.reply_document(
+                                    document=media
+                                )
+
+                        elif ext in VIDEO_EXTENSIONS:
+                            await update.message.reply_video(video=media)
+
+                        sent += 1
+
+                except Exception:
+                    logger.exception("File sending failed: %s", filename)
+                    skipped += 1
+
             await msg.edit_text(
-                "❌ Мавод ёфт нашуд ё Instagram дастрасиро маҳдуд кард."
+                f"✅ Тайёр!\n"
+                f"📥 Фиристода шуд: {sent}\n"
+                f"⚠️ Фиристода нашуд: {skipped}"
             )
-            return
-
-        await msg.edit_text("📤 Ирсоли файлҳо...")
-
-        for filename in files:
-            with open(filename, "rb") as media:
-                if filename.lower().endswith((".jpg", ".jpeg", ".png", ".webp")):
-                    await update.message.reply_photo(photo=media)
-                else:
-                    await update.message.reply_video(video=media)
-
-        await msg.delete()
 
     except Exception as error:
         logger.exception("Instagram download failed")
         await msg.edit_text(
-            "❌ Боргирӣ нашуд.\n"
-            "Сабаб: " + str(error)[:700]
+            "❌ Боргирӣ нашуд.\nСабаб: " + str(error)[:700]
         )
-
-    finally:
-        for filename in files:
-            try:
-                os.remove(filename)
-            except OSError:
-                pass
 
 
 async def main():
@@ -126,6 +196,7 @@ async def main():
     )
 
     logger.info("TurboInstta started")
+
     await app.initialize()
     await app.start()
     await app.updater.start_polling()
